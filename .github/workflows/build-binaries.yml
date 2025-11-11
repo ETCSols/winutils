@@ -7,9 +7,9 @@ on:
       hadoop_versions:
         description: 'Hadoop versions to build (comma-separated, e.g., 3.3.6,3.4.1,3.4.2)'
         required: true
-        default: '3.3.6'
+        default: '3.4.2'
   
-  # Trigger on push to main branch (optional)
+  # # Trigger on push to main branch (optional)
   # push:
   #   branches:
   #     - main
@@ -108,11 +108,13 @@ jobs:
       # ============================================
       # STEP 5: Setup Protocol Buffers
       # ============================================
-      - name: Setup Protocol Buffers 3.21.12
+      - name: Setup Protocol Buffers 21.12
         shell: powershell
         run: |
-          Write-Host "Installing Protocol Buffers 3.21.12..."
-          $PROTOBUF_VERSION = "3.21.12"
+          Write-Host "Installing Protocol Buffers 21.12..."
+          
+          # Protocol Buffers version (using new versioning scheme: v21.12 instead of v3.21.12)
+          $PROTOBUF_VERSION = "21.12"
           $PROTOBUF_URL = "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOBUF_VERSION/protoc-$PROTOBUF_VERSION-win64.zip"
           
           # Create temp directory
@@ -237,18 +239,6 @@ jobs:
         with:
           path: ~/.m2/repository
           key: maven-${{ runner.os }}-${{ matrix.hadoop_version }}-${{ hashFiles('hadoop/**/pom.xml') }}
-          restore-keys: |
-            maven-${{ runner.os }}-${{ matrix.hadoop_version }}-
-            maven-${{ runner.os }}-
-
-      # ============================================
-      # STEP 11: Cache Maven Dependencies
-      # ============================================
-      - name: Cache Maven Dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: maven-${{ runner.os }}-${{ matrix.hadoop_version }}-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             maven-${{ runner.os }}-${{ matrix.hadoop_version }}-
             maven-${{ runner.os }}-
