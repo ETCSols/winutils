@@ -7,7 +7,7 @@ on:
       hadoop_versions:
         description: 'Hadoop versions to build (comma-separated, e.g., 3.3.6,3.4.1,3.4.2)'
         required: true
-        default: '3.4.2'
+        default: '3.3.6'
   
   # Trigger on push to main branch (optional)
   # push:
@@ -74,7 +74,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-          cache: 'maven'
 
       - name: Verify Java Installation
         shell: cmd
@@ -86,13 +85,6 @@ jobs:
       # ============================================
       # STEP 3: Setup Maven
       # ============================================
-      - name: Setup Maven
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '11'
-          cache: 'maven'
-
       - name: Verify Maven Installation
         shell: cmd
         run: |
@@ -244,6 +236,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ matrix.hadoop_version }}-${{ hashFiles('hadoop/**/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-${{ matrix.hadoop_version }}-
+            maven-${{ runner.os }}-
+
+      # ============================================
+      # STEP 11: Cache Maven Dependencies
+      # ============================================
+      - name: Cache Maven Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
           key: maven-${{ runner.os }}-${{ matrix.hadoop_version }}-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             maven-${{ runner.os }}-${{ matrix.hadoop_version }}-
@@ -254,11 +258,13 @@ jobs:
       # ============================================
       - name: Build Hadoop with Native Libraries
         shell: cmd
-        working-directory: C:\hadoop-source
+        working-directory: hadoop
         run: |
           echo ================================================
-          echo Building Hadoop %{{ matrix.hadoop_version }} Native Libraries
+          echo Building Hadoop ${{ matrix.hadoop_version }} Native Libraries
           echo ================================================
+          echo Current directory: %CD%
+          echo.
           
           REM Set required environment variables
           set JAVA_HOME=%JAVA_HOME%
@@ -279,13 +285,15 @@ jobs:
       # ============================================
       - name: Verify Native Binaries
         shell: powershell
+        working-directory: hadoop
         run: |
           Write-Host "Verifying native binaries were built..."
           
           $HADOOP_VERSION = "${{ matrix.hadoop_version }}"
-          $BIN_PATH = "C:\hadoop-source\hadoop-dist\target\hadoop-$HADOOP_VERSION\bin"
+          $BIN_PATH = "hadoop-dist\target\hadoop-$HADOOP_VERSION\bin"
           
           Write-Host "Checking binaries in: $BIN_PATH"
+          Write-Host "Full path: $((Get-Location).Path)\$BIN_PATH"
           
           # Check for critical native files
           $REQUIRED_FILES = @(
@@ -320,12 +328,16 @@ jobs:
       # ============================================
       - name: Prepare Artifacts
         shell: powershell
+        working-directory: hadoop
         run: |
           Write-Host "Preparing artifacts for upload..."
           
           $HADOOP_VERSION = "${{ matrix.hadoop_version }}"
-          $BIN_PATH = "C:\hadoop-source\hadoop-dist\target\hadoop-$HADOOP_VERSION\bin"
-          $ARTIFACT_DIR = "C:\hadoop-artifacts\hadoop-$HADOOP_VERSION-native-win"
+          $BIN_PATH = "hadoop-dist\target\hadoop-$HADOOP_VERSION\bin"
+          $ARTIFACT_DIR = "..\hadoop-artifacts\hadoop-$HADOOP_VERSION-native-win"
+          
+          Write-Host "Source path: $((Get-Location).Path)\$BIN_PATH"
+          Write-Host "Destination path: $((Get-Location).Path)\$ARTIFACT_DIR"
           
           # Create artifact directory
           New-Item -ItemType Directory -Force -Path $ARTIFACT_DIR | Out-Null
@@ -362,7 +374,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hadoop-${{ matrix.hadoop_version }}-native-windows-x64
-          path: C:\hadoop-artifacts\hadoop-${{ matrix.hadoop_version }}-native-win\
+          path: hadoop-artifacts/hadoop-${{ matrix.hadoop_version }}-native-win/
           if-no-files-found: error
           retention-days: 90
           compression-level: 9
@@ -376,8 +388,8 @@ jobs:
         with:
           name: build-logs-${{ matrix.hadoop_version }}-${{ github.run_number }}
           path: |
-            C:\hadoop-source\**\*.log
-            C:\hadoop-source\**\target\surefire-reports\
+            hadoop/**/*.log
+            hadoop/**/target/surefire-reports/
           if-no-files-found: warn
           retention-days: 30
 
