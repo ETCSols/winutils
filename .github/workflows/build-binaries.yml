@@ -200,6 +200,12 @@ jobs:
       # ============================================
       # STEP 10: Clone Hadoop Repository
       # ============================================
+      - name: Enable Git Long Paths
+        shell: cmd
+        run: |
+          echo Enabling Git long path support for Windows...
+          git config --global core.longpaths true
+          
       - name: Clone Hadoop Repository
         shell: cmd
         run: |
