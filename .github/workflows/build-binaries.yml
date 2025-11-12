@@ -306,66 +306,113 @@ jobs:
         run: |
           Write-Host "Verifying native binaries were built..."
           
-          # Search for the native binaries in hadoop-common
           $NATIVE_PATH = "hadoop-common-project\hadoop-common\target\native\target\bin"
           
           Write-Host "Checking binaries in: $NATIVE_PATH"
           Write-Host "Full path: $((Get-Location).Path)\$NATIVE_PATH"
           
-          # Check for critical native files
           $REQUIRED_FILES = @(
             "winutils.exe",
-            "hadoop.dll"
+            "winutils.pdb",
+            "hadoop.dll",
+            "hadoop.exp",
+            "hadoop.lib",
+            "hadoop.pdb",
+            "hadoop.cmd",
+            "libwinutils.lib",
+            "libwinutils.pdb"
           )
           
           $OPTIONAL_FILES = @(
-            "hadoop.exp",
-            "hadoop.lib",
-            "hadoop.pdb"
+            "hdfs.dll",
+            "hdfs.exp",
+            "hdfs.lib",
+            "hdfs.pdb",
+            "hdfs.cmd",
+            "mapred.cmd",
+            "yarn.cmd",
+            "hdfs",
+            "mapred",
+            "yarn",
+            "hadoop",
+            "gmock.pdb",
+            "gmock_main.pdb",
+            "gtest.pdb",
+            "gtest_main.pdb"
           )
           
           $ALL_FOUND = $true
-          Write-Host "`nRequired Files:"
+          $FOUND_COUNT = 0
+          
+          Write-Host ""
+          Write-Host "=== CRITICAL NATIVE FILES ==="
           foreach ($FILE in $REQUIRED_FILES) {
             $FILE_PATH = Join-Path $NATIVE_PATH $FILE
             if (Test-Path $FILE_PATH) {
               $FILE_SIZE = (Get-Item $FILE_PATH).Length
-              Write-Host "  ✓ Found: $FILE ($FILE_SIZE bytes)"
+              Write-Host "  [OK] Found: $FILE ($FILE_SIZE bytes)"
+              $FOUND_COUNT++
             } else {
-              Write-Host "  ✗ Missing: $FILE"
+              Write-Host "  [MISSING] $FILE"
               $ALL_FOUND = $false
             }
           }
           
-          Write-Host "`nOptional Files:"
+          Write-Host ""
+          Write-Host "=== OPTIONAL/ADDITIONAL FILES ==="
           foreach ($FILE in $OPTIONAL_FILES) {
             $FILE_PATH = Join-Path $NATIVE_PATH $FILE
             if (Test-Path $FILE_PATH) {
               $FILE_SIZE = (Get-Item $FILE_PATH).Length
-              Write-Host "  ✓ Found: $FILE ($FILE_SIZE bytes)"
+              Write-Host "  [OK] Found: $FILE ($FILE_SIZE bytes)"
+              $FOUND_COUNT++
             } else {
-              Write-Host "  - Not found: $FILE (optional)"
+              Write-Host "  [SKIP] Not found: $FILE (optional)"
             }
           }
           
           if (-not $ALL_FOUND) {
-            Write-Host "`nError: Some required binaries were not built!"
-            Write-Host "`nSearching for native binaries in target directories..."
+            Write-Host ""
+            Write-Host "ERROR: Some REQUIRED binaries were not built!"
+            Write-Host ""
+            Write-Host "Searching entire target directory for native binaries..."
+            
+            Write-Host ""
+            Write-Host "DLL files found:"
             Get-ChildItem -Path "hadoop-common-project" -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-              Write-Host "  Found DLL: $($_.FullName)"
+              Write-Host "  - $($_.FullName)"
             }
-            Get-ChildItem -Path "hadoop-common-project" -Recurse -Filter "winutils.exe" -ErrorAction SilentlyContinue | ForEach-Object {
-              Write-Host "  Found EXE: $($_.FullName)"
+            
+            Write-Host ""
+            Write-Host "EXE files found:"
+            Get-ChildItem -Path "hadoop-common-project" -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  - $($_.FullName)"
             }
+            
+            Write-Host ""
+            Write-Host "LIB files found:"
+            Get-ChildItem -Path "hadoop-common-project" -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  - $($_.FullName)"
+            }
+            
             exit 1
           }
           
-          Write-Host "`nAll required native binaries found successfully!"
+          Write-Host ""
+          Write-Host "SUCCESS: All REQUIRED native binaries found!"
+          Write-Host "Total files found: $FOUND_COUNT"
           
-          # List all files in the native bin directory
-          Write-Host "`nAll files in native bin directory:"
-          Get-ChildItem -Path $NATIVE_PATH | ForEach-Object {
-            Write-Host "  - $($_.Name) ($($_.Length) bytes)"
+          Write-Host ""
+          Write-Host "=== ALL FILES IN NATIVE BIN DIRECTORY ==="
+          Get-ChildItem -Path $NATIVE_PATH | Sort-Object Name | ForEach-Object {
+            $size = if ($_.Length -lt 1KB) { 
+              "$($_.Length) bytes" 
+            } elseif ($_.Length -lt 1MB) { 
+              "{0:N2} KB" -f ($_.Length / 1KB) 
+            } else { 
+              "{0:N2} MB" -f ($_.Length / 1MB) 
+            }
+            Write-Host "  - $($_.Name) ($size)"
           }
 
       # ============================================
@@ -384,18 +431,15 @@ jobs:
           Write-Host "Source path: $((Get-Location).Path)\$BIN_PATH"
           Write-Host "Destination path: $((Get-Location).Path)\$ARTIFACT_DIR"
           
-          # Create artifact directory
           New-Item -ItemType Directory -Force -Path $ARTIFACT_DIR | Out-Null
           
-          # Copy ALL files from native binaries directory
-          Write-Host "`nCopying all native binaries and supporting files..."
+          Write-Host ""
+          Write-Host "Copying all native binaries and supporting files..."
           Copy-Item -Path "$BIN_PATH\*" -Destination $ARTIFACT_DIR -Force
           
-          # Count files
           $FILE_COUNT = (Get-ChildItem -Path $ARTIFACT_DIR).Count
           Write-Host "Copied $FILE_COUNT files"
           
-          # Create comprehensive build info file
           $BUILD_INFO = @"
           ======================================
           Hadoop Native Windows Build Information
@@ -494,8 +538,8 @@ jobs:
           
           "@ | Out-File -FilePath "$ARTIFACT_DIR\BUILD_INFO.txt" -Encoding UTF8
           
-          # List all files with sizes
-          Write-Host "`nGenerating file manifest..."
+          Write-Host ""
+          Write-Host "Generating file manifest..."
           $TOTAL_SIZE = 0
           Get-ChildItem -Path $ARTIFACT_DIR | Sort-Object Name | ForEach-Object {
             $size = $_.Length
@@ -514,7 +558,6 @@ jobs:
             Write-Host $line
           }
           
-          # Add total size
           $totalSizeStr = if ($TOTAL_SIZE -lt 1MB) { 
             "{0:N2} KB" -f ($TOTAL_SIZE / 1KB) 
           } else { 
@@ -527,7 +570,8 @@ jobs:
           Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value "Build completed successfully!"
           Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value "======================================"
           
-          Write-Host "`nArtifacts prepared successfully!"
+          Write-Host ""
+          Write-Host "Artifacts prepared successfully!"
           Write-Host $summary
 
       # ============================================
