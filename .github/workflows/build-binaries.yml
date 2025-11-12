@@ -387,47 +387,148 @@ jobs:
           # Create artifact directory
           New-Item -ItemType Directory -Force -Path $ARTIFACT_DIR | Out-Null
           
-          # Copy native binaries
-          Write-Host "`nCopying native binaries..."
+          # Copy ALL files from native binaries directory
+          Write-Host "`nCopying all native binaries and supporting files..."
           Copy-Item -Path "$BIN_PATH\*" -Destination $ARTIFACT_DIR -Force
           
-          # Create build info file
+          # Count files
+          $FILE_COUNT = (Get-ChildItem -Path $ARTIFACT_DIR).Count
+          Write-Host "Copied $FILE_COUNT files"
+          
+          # Create comprehensive build info file
           $BUILD_INFO = @"
+          ======================================
+          Hadoop Native Windows Build Information
+          ======================================
+          
           Hadoop Version: $HADOOP_VERSION
           Build Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
-          Build Type: Native Windows Libraries Only
+          Build Type: Native Windows Libraries (hadoop-common-project)
           Build OS: Windows Server 2022
           Build Runner: GitHub Actions
-          Java Version: $(java -version 2>&1 | Select-Object -First 1)
-          Maven Version: $(mvn --version | Select-Object -First 1)
-          CMake Version: $(cmake --version | Select-Object -First 1)
-          Protobuf Version: $(protoc --version)
+          Workflow: ${{ github.workflow }}
+          Run Number: ${{ github.run_number }}
           
-          Build Notes:
-          - These are ONLY the native Windows binaries (winutils.exe, hadoop.dll, etc.)
-          - Built from hadoop-common-project module
-          - Does not include Java JARs or full Hadoop distribution
-          - Compatible with official Hadoop $HADOOP_VERSION distribution
+          Build Tools:
+          - Java: $(java -version 2>&1 | Select-Object -First 1)
+          - Maven: $(mvn --version | Select-Object -First 1)
+          - CMake: $(cmake --version | Select-Object -First 1)
+          - Protobuf: $(protoc --version)
+          - Visual Studio: 2022 (Build Tools)
           
-          Usage:
-          1. Download your Hadoop $HADOOP_VERSION distribution from Apache
-          2. Extract these native binaries to your HADOOP_HOME\bin directory
-          3. Set HADOOP_HOME environment variable
-          4. Verify with: hadoop checknative -a
+          ======================================
+          What's Included
+          ======================================
           
-          Files Included:
+          This archive contains the native Windows binaries for Hadoop $HADOOP_VERSION:
+          
+          CORE BINARIES:
+          - winutils.exe       : Windows utilities for Hadoop
+          - hadoop.dll         : Core Hadoop native library
+          - hadoop.lib/.pdb    : Import library and debug symbols
+          - libwinutils.lib    : Windows utilities library
+          
+          HDFS BINARIES (if built):
+          - hdfs.dll/.lib/.pdb : HDFS native library and symbols
+          
+          COMMAND SCRIPTS:
+          - hadoop.cmd         : Hadoop command wrapper
+          - hdfs.cmd          : HDFS command wrapper  
+          - yarn.cmd          : YARN command wrapper
+          - mapred.cmd        : MapReduce command wrapper
+          
+          SHELL SCRIPTS (for Git Bash/Cygwin):
+          - hadoop, hdfs, yarn, mapred : Unix-style command scripts
+          
+          TEST LIBRARIES:
+          - gtest*.pdb, gmock*.pdb : Google Test debug symbols
+          
+          ======================================
+          Installation Instructions
+          ======================================
+          
+          1. DOWNLOAD HADOOP DISTRIBUTION:
+             Download the official Hadoop $HADOOP_VERSION binary distribution from:
+             https://hadoop.apache.org/releases.html
+             
+          2. EXTRACT HADOOP:
+             Extract the downloaded Hadoop distribution to a directory, e.g.:
+             C:\hadoop-$HADOOP_VERSION
+             
+          3. INSTALL NATIVE BINARIES:
+             Extract ALL files from this archive to:
+             C:\hadoop-$HADOOP_VERSION\bin\
+             
+             This will add/replace the Windows native binaries.
+             
+          4. SET ENVIRONMENT VARIABLES:
+             - HADOOP_HOME=C:\hadoop-$HADOOP_VERSION
+             - Add %HADOOP_HOME%\bin to your PATH
+             
+          5. VERIFY INSTALLATION:
+             Open a new command prompt and run:
+             hadoop checknative -a
+             
+             You should see output showing native libraries are loaded.
+          
+          ======================================
+          Troubleshooting
+          ======================================
+          
+          If you get "Could not locate Hadoop executable":
+          - Verify HADOOP_HOME is set correctly
+          - Verify %HADOOP_HOME%\bin is in PATH
+          - Restart your command prompt
+          
+          If you get "winutils.exe not found":
+          - Verify winutils.exe is in %HADOOP_HOME%\bin
+          - Check file permissions
+          
+          If native libraries fail to load:
+          - Ensure you have Visual C++ Redistributable installed
+          - Check that hadoop.dll is in %HADOOP_HOME%\bin
+          
+          ======================================
+          Files Included in This Archive
+          ======================================
+          
           "@ | Out-File -FilePath "$ARTIFACT_DIR\BUILD_INFO.txt" -Encoding UTF8
           
-          # List all files
-          Get-ChildItem -Path $ARTIFACT_DIR | ForEach-Object {
-            Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value "  - $($_.Name) ($($_.Length) bytes)"
+          # List all files with sizes
+          Write-Host "`nGenerating file manifest..."
+          $TOTAL_SIZE = 0
+          Get-ChildItem -Path $ARTIFACT_DIR | Sort-Object Name | ForEach-Object {
+            $size = $_.Length
+            $TOTAL_SIZE += $size
+            
+            $sizeStr = if ($size -lt 1KB) { 
+              "$size bytes" 
+            } elseif ($size -lt 1MB) { 
+              "{0:N2} KB" -f ($size / 1KB) 
+            } else { 
+              "{0:N2} MB" -f ($size / 1MB) 
+            }
+            
+            $line = "  - {0,-30} {1,15}" -f $_.Name, $sizeStr
+            Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value $line
+            Write-Host $line
           }
           
-          Write-Host "`nArtifacts prepared successfully!"
-          Write-Host "`nContents of artifact directory:"
-          Get-ChildItem -Path $ARTIFACT_DIR | ForEach-Object {
-            Write-Host "  - $($_.Name) ($($_.Length) bytes)"
+          # Add total size
+          $totalSizeStr = if ($TOTAL_SIZE -lt 1MB) { 
+            "{0:N2} KB" -f ($TOTAL_SIZE / 1KB) 
+          } else { 
+            "{0:N2} MB" -f ($TOTAL_SIZE / 1MB) 
           }
+          
+          $summary = "`n  TOTAL: $FILE_COUNT files, $totalSizeStr"
+          Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value $summary
+          Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value "`n======================================"
+          Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value "Build completed successfully!"
+          Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value "======================================"
+          
+          Write-Host "`nArtifacts prepared successfully!"
+          Write-Host $summary
 
       # ============================================
       # STEP 15: Upload Native Binaries as Artifacts
