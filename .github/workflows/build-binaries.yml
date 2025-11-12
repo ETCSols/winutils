@@ -271,6 +271,7 @@ jobs:
           echo JAVA_HOME=%JAVA_HOME%
           echo MAVEN_OPTS=%MAVEN_OPTS%
           echo Platform=%Platform%
+          echo PATH=%PATH%
           echo.
           
           REM Verify tools are available
@@ -283,30 +284,103 @@ jobs:
           echo.
           protoc --version
           echo.
+          msbuild /version
+          echo.
           
-          REM Build ONLY hadoop-common-project with native libraries
-          REM This avoids the hadoop-project-dist module which requires WSL
-          REM The native binaries (winutils.exe, hadoop.dll) are in hadoop-common
+          REM Check if we're in Developer Command Prompt
+          echo Checking Visual Studio environment...
+          set | findstr /I "VisualStudio"
+          echo.
           
-          echo Building hadoop-common-project with native libraries...
-          cd hadoop-common-project
+          REM Build hadoop-common with native profile
+          echo Building hadoop-common with native libraries...
+          cd hadoop-common-project\hadoop-common
           
-          mvn clean package -Pnative-win -DskipTests -Dmaven.javadoc.skip=true
+          REM Use install phase instead of package to ensure native build runs
+          REM Add -e for detailed error output
+          mvn clean install -Pnative-win -DskipTests -Dmaven.javadoc.skip=true -e
           
           echo.
-          echo Build completed. Checking for native binaries...
+          echo Build completed. Checking build output...
+          
+          REM List the target directory structure
+          echo.
+          echo Target directory structure:
+          dir /s /b target\native 2>nul
+          
+          echo.
+          echo Searching for any built binaries...
+          dir /s /b target\*.exe target\*.dll 2>nul
         timeout-minutes: 60
 
       # ============================================
       # STEP 13: Verify Build Artifacts
       # ============================================
+      - name: Check Build Logs for Native Compilation
+        shell: powershell
+        working-directory: hadoop
+        run: |
+          Write-Host "Checking if native compilation was attempted..."
+          
+          # Look for CMake execution in recent files
+          Write-Host ""
+          Write-Host "Searching for CMake-related files..."
+          Get-ChildItem -Path "hadoop-common-project\hadoop-common" -Recurse -Filter "CMakeCache.txt" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  Found: $($_.FullName)"
+          }
+          
+          Write-Host ""
+          Write-Host "Searching for build directories..."
+          Get-ChildItem -Path "hadoop-common-project\hadoop-common\target" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  - $($_.Name)"
+          }
+          
+          Write-Host ""
+          Write-Host "Checking for any compiled files..."
+          Get-ChildItem -Path "hadoop-common-project\hadoop-common\target" -Recurse -Include "*.exe","*.dll","*.lib" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  Found: $($_.FullName) ($($_.Length) bytes)"
+          }
+          
       - name: Verify Native Binaries
         shell: powershell
         working-directory: hadoop
         run: |
           Write-Host "Verifying native binaries were built..."
           
-          $NATIVE_PATH = "hadoop-common-project\hadoop-common\target\native\target\bin"
+          # Try multiple possible locations
+          $POSSIBLE_PATHS = @(
+            "hadoop-common-project\hadoop-common\target\native\target\bin",
+            "hadoop-common-project\hadoop-common\target\bin",
+            "hadoop-common-project\hadoop-common\src\main\native\target\bin",
+            "hadoop-common-project\hadoop-common\target\native\bin"
+          )
+          
+          $NATIVE_PATH = $null
+          foreach ($path in $POSSIBLE_PATHS) {
+            if (Test-Path $path) {
+              $NATIVE_PATH = $path
+              Write-Host "Found native bin directory at: $path"
+              break
+            }
+          }
+          
+          if (-not $NATIVE_PATH) {
+            Write-Host ""
+            Write-Host "ERROR: Could not find native bin directory in any expected location!"
+            Write-Host ""
+            Write-Host "Searched locations:"
+            foreach ($path in $POSSIBLE_PATHS) {
+              Write-Host "  - $path"
+            }
+            
+            Write-Host ""
+            Write-Host "Available directories in target:"
+            Get-ChildItem -Path "hadoop-common-project\hadoop-common\target" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  - target\$($_.Name)"
+            }
+            
+            exit 1
+          }
           
           Write-Host "Checking binaries in: $NATIVE_PATH"
           Write-Host "Full path: $((Get-Location).Path)\$NATIVE_PATH"
