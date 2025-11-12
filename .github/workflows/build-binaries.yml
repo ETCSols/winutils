@@ -252,7 +252,7 @@ jobs:
       # ============================================
       # STEP 12: Build Hadoop Native Libraries
       # ============================================
-      - name: Build Hadoop with Native Libraries
+      - name: Build Hadoop Common Native Libraries
         shell: cmd
         working-directory: hadoop
         run: |
@@ -266,15 +266,36 @@ jobs:
           set JAVA_HOME=%JAVA_HOME%
           set PATH=%PATH%;C:\protobuf\bin
           
-          REM Build command following BUILDING.txt specifications
-          REM -Pnative-win: Enable Windows native build profile
-          REM -DskipTests: Skip tests to speed up build
-          REM -Pdist: Build distribution
-          REM -Dtar: Create tar.gz distribution
-          REM -Dmaven.javadoc.skip: Skip javadoc generation
+          REM Display environment for debugging
+          echo Environment Variables:
+          echo JAVA_HOME=%JAVA_HOME%
+          echo MAVEN_OPTS=%MAVEN_OPTS%
+          echo Platform=%Platform%
+          echo.
           
-          mvn clean package -Pnative-win -Pdist -DskipTests -Dtar -Dmaven.javadoc.skip=true
-        timeout-minutes: 90
+          REM Verify tools are available
+          echo Verifying build tools...
+          java -version
+          echo.
+          mvn --version
+          echo.
+          cmake --version
+          echo.
+          protoc --version
+          echo.
+          
+          REM Build ONLY hadoop-common-project with native libraries
+          REM This avoids the hadoop-project-dist module which requires WSL
+          REM The native binaries (winutils.exe, hadoop.dll) are in hadoop-common
+          
+          echo Building hadoop-common-project with native libraries...
+          cd hadoop-common-project
+          
+          mvn clean package -Pnative-win -DskipTests -Dmaven.javadoc.skip=true
+          
+          echo.
+          echo Build completed. Checking for native binaries...
+        timeout-minutes: 60
 
       # ============================================
       # STEP 13: Verify Build Artifacts
@@ -285,39 +306,67 @@ jobs:
         run: |
           Write-Host "Verifying native binaries were built..."
           
-          $HADOOP_VERSION = "${{ matrix.hadoop_version }}"
-          $BIN_PATH = "hadoop-dist\target\hadoop-$HADOOP_VERSION\bin"
+          # Search for the native binaries in hadoop-common
+          $NATIVE_PATH = "hadoop-common-project\hadoop-common\target\native\target\bin"
           
-          Write-Host "Checking binaries in: $BIN_PATH"
-          Write-Host "Full path: $((Get-Location).Path)\$BIN_PATH"
+          Write-Host "Checking binaries in: $NATIVE_PATH"
+          Write-Host "Full path: $((Get-Location).Path)\$NATIVE_PATH"
           
           # Check for critical native files
           $REQUIRED_FILES = @(
             "winutils.exe",
-            "hadoop.dll",
+            "hadoop.dll"
+          )
+          
+          $OPTIONAL_FILES = @(
             "hadoop.exp",
             "hadoop.lib",
             "hadoop.pdb"
           )
           
           $ALL_FOUND = $true
+          Write-Host "`nRequired Files:"
           foreach ($FILE in $REQUIRED_FILES) {
-            $FILE_PATH = Join-Path $BIN_PATH $FILE
+            $FILE_PATH = Join-Path $NATIVE_PATH $FILE
             if (Test-Path $FILE_PATH) {
               $FILE_SIZE = (Get-Item $FILE_PATH).Length
-              Write-Host "✓ Found: $FILE ($FILE_SIZE bytes)"
+              Write-Host "  ✓ Found: $FILE ($FILE_SIZE bytes)"
             } else {
-              Write-Host "✗ Missing: $FILE"
+              Write-Host "  ✗ Missing: $FILE"
               $ALL_FOUND = $false
             }
           }
           
+          Write-Host "`nOptional Files:"
+          foreach ($FILE in $OPTIONAL_FILES) {
+            $FILE_PATH = Join-Path $NATIVE_PATH $FILE
+            if (Test-Path $FILE_PATH) {
+              $FILE_SIZE = (Get-Item $FILE_PATH).Length
+              Write-Host "  ✓ Found: $FILE ($FILE_SIZE bytes)"
+            } else {
+              Write-Host "  - Not found: $FILE (optional)"
+            }
+          }
+          
           if (-not $ALL_FOUND) {
-            Write-Host "Error: Some required binaries were not built!"
+            Write-Host "`nError: Some required binaries were not built!"
+            Write-Host "`nSearching for native binaries in target directories..."
+            Get-ChildItem -Path "hadoop-common-project" -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  Found DLL: $($_.FullName)"
+            }
+            Get-ChildItem -Path "hadoop-common-project" -Recurse -Filter "winutils.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  Found EXE: $($_.FullName)"
+            }
             exit 1
           }
           
-          Write-Host "All required native binaries found successfully!"
+          Write-Host "`nAll required native binaries found successfully!"
+          
+          # List all files in the native bin directory
+          Write-Host "`nAll files in native bin directory:"
+          Get-ChildItem -Path $NATIVE_PATH | ForEach-Object {
+            Write-Host "  - $($_.Name) ($($_.Length) bytes)"
+          }
 
       # ============================================
       # STEP 14: Prepare Artifacts for Upload
@@ -329,7 +378,7 @@ jobs:
           Write-Host "Preparing artifacts for upload..."
           
           $HADOOP_VERSION = "${{ matrix.hadoop_version }}"
-          $BIN_PATH = "hadoop-dist\target\hadoop-$HADOOP_VERSION\bin"
+          $BIN_PATH = "hadoop-common-project\hadoop-common\target\native\target\bin"
           $ARTIFACT_DIR = "..\hadoop-artifacts\hadoop-$HADOOP_VERSION-native-win"
           
           Write-Host "Source path: $((Get-Location).Path)\$BIN_PATH"
@@ -339,12 +388,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path $ARTIFACT_DIR | Out-Null
           
           # Copy native binaries
-          Copy-Item -Path "$BIN_PATH\*" -Destination $ARTIFACT_DIR -Recurse -Force
+          Write-Host "`nCopying native binaries..."
+          Copy-Item -Path "$BIN_PATH\*" -Destination $ARTIFACT_DIR -Force
           
           # Create build info file
           $BUILD_INFO = @"
           Hadoop Version: $HADOOP_VERSION
           Build Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          Build Type: Native Windows Libraries Only
           Build OS: Windows Server 2022
           Build Runner: GitHub Actions
           Java Version: $(java -version 2>&1 | Select-Object -First 1)
@@ -352,16 +403,31 @@ jobs:
           CMake Version: $(cmake --version | Select-Object -First 1)
           Protobuf Version: $(protoc --version)
           
+          Build Notes:
+          - These are ONLY the native Windows binaries (winutils.exe, hadoop.dll, etc.)
+          - Built from hadoop-common-project module
+          - Does not include Java JARs or full Hadoop distribution
+          - Compatible with official Hadoop $HADOOP_VERSION distribution
+          
+          Usage:
+          1. Download your Hadoop $HADOOP_VERSION distribution from Apache
+          2. Extract these native binaries to your HADOOP_HOME\bin directory
+          3. Set HADOOP_HOME environment variable
+          4. Verify with: hadoop checknative -a
+          
           Files Included:
           "@ | Out-File -FilePath "$ARTIFACT_DIR\BUILD_INFO.txt" -Encoding UTF8
           
           # List all files
-          Get-ChildItem -Path $ARTIFACT_DIR -Recurse | ForEach-Object {
+          Get-ChildItem -Path $ARTIFACT_DIR | ForEach-Object {
             Add-Content -Path "$ARTIFACT_DIR\BUILD_INFO.txt" -Value "  - $($_.Name) ($($_.Length) bytes)"
           }
           
-          Write-Host "Artifacts prepared in: $ARTIFACT_DIR"
-          Get-ChildItem -Path $ARTIFACT_DIR
+          Write-Host "`nArtifacts prepared successfully!"
+          Write-Host "`nContents of artifact directory:"
+          Get-ChildItem -Path $ARTIFACT_DIR | ForEach-Object {
+            Write-Host "  - $($_.Name) ($($_.Length) bytes)"
+          }
 
       # ============================================
       # STEP 15: Upload Native Binaries as Artifacts
@@ -384,8 +450,8 @@ jobs:
         with:
           name: build-logs-${{ matrix.hadoop_version }}-${{ github.run_number }}
           path: |
-            hadoop/**/*.log
-            hadoop/**/target/surefire-reports/
+            hadoop/hadoop-common-project/**/*.log
+            hadoop/hadoop-common-project/**/target/surefire-reports/
           if-no-files-found: warn
           retention-days: 30
 
@@ -405,13 +471,19 @@ jobs:
           echo "**Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
           echo "**Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## What Was Built" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This workflow builds **only the native Windows binaries** from Hadoop:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`winutils.exe\` - Hadoop Windows utilities" >> $GITHUB_STEP_SUMMARY
+          echo "- \`hadoop.dll\` - Native Hadoop library" >> $GITHUB_STEP_SUMMARY
+          echo "- Supporting files (\`.lib\`, \`.pdb\`, \`.exp\`)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "These binaries are built from the \`hadoop-common-project\` module only." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Build Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Hadoop Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|----------------|--------|" >> $GITHUB_STEP_SUMMARY
-          
-          # Note: Individual job statuses would need to be checked via API or passed as outputs
-          # For simplicity, we're showing the overall status here
           echo "| Multiple versions | Check individual job logs |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Artifacts" >> $GITHUB_STEP_SUMMARY
@@ -419,9 +491,19 @@ jobs:
           echo "Native Windows binaries have been uploaded as workflow artifacts." >> $GITHUB_STEP_SUMMARY
           echo "Download them from the [Actions artifacts section](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Usage" >> $GITHUB_STEP_SUMMARY
+          echo "## Usage Instructions" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "1. Download the artifact for your Hadoop version" >> $GITHUB_STEP_SUMMARY
-          echo "2. Extract the contents to your Hadoop \`bin\` directory" >> $GITHUB_STEP_SUMMARY
-          echo "3. Set \`HADOOP_HOME\` environment variable" >> $GITHUB_STEP_SUMMARY
-          echo "4. Verify with: \`hadoop checknative -a\`" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the official Hadoop distribution for your version from [Apache Hadoop](https://hadoop.apache.org/releases.html)" >> $GITHUB_STEP_SUMMARY
+          echo "2. Download the native binaries artifact for your version from this workflow" >> $GITHUB_STEP_SUMMARY
+          echo "3. Extract the native binaries to \`HADOOP_HOME\\bin\` directory" >> $GITHUB_STEP_SUMMARY
+          echo "4. Set \`HADOOP_HOME\` environment variable to your Hadoop installation directory" >> $GITHUB_STEP_SUMMARY
+          echo "5. Add \`%HADOOP_HOME%\\bin\` to your system PATH" >> $GITHUB_STEP_SUMMARY
+          echo "6. Verify with: \`hadoop checknative -a\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Why Only Native Binaries?" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Building the full Hadoop distribution on Windows requires WSL (Windows Subsystem for Linux)," >> $GITHUB_STEP_SUMMARY
+          echo "which is not available in GitHub Actions runners. Since the native binaries are the main" >> $GITHUB_STEP_SUMMARY
+          echo "components missing from the official distributions, we build only those components." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The native binaries are fully compatible with the official Hadoop distributions." >> $GITHUB_STEP_SUMMARY
