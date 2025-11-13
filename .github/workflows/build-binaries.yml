@@ -9,7 +9,7 @@ on:
         required: true
         default: '3.4.2'
   
-  # # Trigger on push to main branch (optional)
+  # Trigger on push to main branch (optional)
   # push:
   #   branches:
   #     - main
@@ -296,7 +296,50 @@ jobs:
           mvn compile -Pnative-win -DskipTests -X -Dmaven.javadoc.skip=true 2>&1 | findstr /I /C:"native" /C:"cmake" /C:"exec" /C:"BUILD SUCCESS" /C:"BUILD FAILURE"
 
       # ============================================
-      # STEP 11B: Cache Maven Dependencies
+      # STEP 11B: Patch Hadoop Source for Windows SDK Compatibility
+      # ============================================
+      - name: Patch Hadoop Source for Modern Windows SDK
+        shell: powershell
+        working-directory: hadoop\hadoop-common-project\hadoop-common
+        run: |
+          Write-Host "Patching Hadoop source for Windows SDK 10.0.26100.0 compatibility..."
+          
+          $WINUTILS_HEADER = "src\main\winutils\include\winutils.h"
+          
+          if (Test-Path $WINUTILS_HEADER) {
+            Write-Host "Found winutils.h, applying compatibility patch..."
+            
+            # Read the file
+            $content = Get-Content $WINUTILS_HEADER -Raw
+            
+            # Check if GetFileInformationByName is declared
+            if ($content -match "GetFileInformationByName") {
+              Write-Host "Found GetFileInformationByName declaration - this conflicts with Windows SDK 10.0.26100.0"
+              
+              # Comment out or remove the conflicting declaration
+              # The function is already provided by winbase.h in modern Windows SDK
+              $content = $content -replace '(?m)^(\s*BOOL\s+WINAPI\s+GetFileInformationByName[^;]*;)', '// $1 // Commented out - conflicts with Windows SDK 10.0.26100.0'
+              
+              # Write back
+              Set-Content -Path $WINUTILS_HEADER -Value $content -NoNewline
+              
+              Write-Host "Patch applied successfully!"
+              Write-Host ""
+              Write-Host "Verifying patch..."
+              Get-Content $WINUTILS_HEADER | Select-String -Pattern "GetFileInformationByName" -Context 2
+            } else {
+              Write-Host "GetFileInformationByName not found in header - patch may not be needed"
+            }
+          } else {
+            Write-Host "winutils.h not found at expected location"
+            Write-Host "Searching for winutils.h..."
+            Get-ChildItem -Path "src" -Recurse -Filter "winutils.h" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  Found: $($_.FullName)"
+            }
+          }
+
+      # ============================================
+      # STEP 11C: Cache Maven Dependencies
       # ============================================
       - name: Cache Maven Dependencies
         uses: actions/cache@v4
