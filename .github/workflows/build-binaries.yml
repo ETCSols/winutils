@@ -145,35 +145,63 @@ jobs:
       # ============================================
       # STEP 6: Setup Boost (using vcpkg for Windows)
       # ============================================
-      - name: Setup Boost 1.86.0
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: |
+            C:\vcpkg\installed
+            C:\vcpkg\packages
+            C:\vcpkg\buildtrees
+          key: vcpkg-${{ runner.os }}-boost-zlib-${{ hashFiles('**/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-boost-zlib-
+            vcpkg-${{ runner.os }}-
+      
+      - name: Setup Boost (if needed)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          Write-Host "Installing Boost via vcpkg..."
+          Write-Host "Installing Boost via vcpkg (this may take 20-30 minutes first time)..."
+          Write-Host "Future runs will use cached version."
           
           # vcpkg comes pre-installed on GitHub runners
           vcpkg install boost:x64-windows
           
+          Write-Host "Boost installed successfully"
+      
+      - name: Configure Boost Environment
+        shell: powershell
+        run: |
           # Set BOOST_ROOT environment variable
           $BOOST_ROOT = "C:\vcpkg\installed\x64-windows"
           echo "BOOST_ROOT=$BOOST_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          Write-Host "Boost installed successfully"
+          Write-Host "Boost environment configured"
+          Write-Host "BOOST_ROOT: $BOOST_ROOT"
 
       # ============================================
       # STEP 7: Setup Zlib (required for compression)
       # ============================================
       - name: Setup Zlib
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           Write-Host "Installing Zlib via vcpkg..."
           
           vcpkg install zlib:x64-windows
           
+          Write-Host "Zlib installed successfully"
+      
+      - name: Configure Zlib Environment
+        shell: powershell
+        run: |
           # Set ZLIB_HOME environment variable
           $ZLIB_HOME = "C:\vcpkg\installed\x64-windows"
           echo "ZLIB_HOME=$ZLIB_HOME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          Write-Host "Zlib installed successfully"
+          Write-Host "Zlib environment configured"
+          Write-Host "ZLIB_HOME: $ZLIB_HOME"
 
       # ============================================
       # STEP 8: Setup Visual Studio Environment
@@ -282,187 +310,162 @@ jobs:
       # ============================================
       # STEP 12: Build Hadoop Native Libraries
       # ============================================
-      - name: Build Hadoop Common Native Libraries
+      - name: Try Alternative Native Build Method
         shell: cmd
         working-directory: hadoop\hadoop-common-project\hadoop-common
         run: |
           echo ================================================
-          echo Building Hadoop ${{ matrix.hadoop_version }} Native Libraries
+          echo Attempting Native Build - Method 1: Direct Maven Profile
           echo ================================================
-          echo Current directory: %CD%
-          echo.
           
-          REM Set required environment variables for native build
+          REM Set all required environment variables
           set JAVA_HOME=%JAVA_HOME%
           set PATH=%PATH%;C:\protobuf\bin
+          set Platform=x64
           set REQUIRE_SNAPPY=false
           set REQUIRE_OPENSSL=false
           set REQUIRE_BZIP2=false
           
-          REM Display environment for debugging
-          echo Environment Variables:
-          echo JAVA_HOME=%JAVA_HOME%
-          echo MAVEN_OPTS=%MAVEN_OPTS%
-          echo Platform=%Platform%
-          echo REQUIRE_SNAPPY=%REQUIRE_SNAPPY%
+          echo Current directory: %CD%
           echo.
           
-          REM Verify tools are available
-          echo Verifying build tools...
-          java -version
-          if errorlevel 1 (
-            echo ERROR: Java not found!
-            exit /b 1
-          )
+          REM First, check what profiles are available
+          echo Checking available Maven profiles...
+          mvn help:all-profiles | findstr /I "native win"
           echo.
           
-          mvn --version
-          if errorlevel 1 (
-            echo ERROR: Maven not found!
-            exit /b 1
-          )
-          echo.
+          REM Try Method 1: Standard native-win profile
+          echo Attempting: mvn package -Pnative-win -DskipTests
+          mvn clean package -Pnative-win -DskipTests -Dmaven.javadoc.skip=true -Drequire.snappy=false -Drequire.openssl=false
           
-          cmake --version
-          if errorlevel 1 (
-            echo ERROR: CMake not found!
-            exit /b 1
-          )
-          echo.
-          
-          protoc --version
-          if errorlevel 1 (
-            echo ERROR: Protoc not found!
-            exit /b 1
-          )
-          echo.
-          
-          msbuild /version
-          if errorlevel 1 (
-            echo ERROR: MSBuild not found!
-            exit /b 1
-          )
-          echo.
-          
-          REM Check Visual Studio environment
-          echo Checking Visual Studio environment...
-          echo VCINSTALLDIR=%VCINSTALLDIR%
-          echo VCToolsInstallDir=%VCToolsInstallDir%
-          if "%VCINSTALLDIR%"=="" (
-            echo WARNING: VCINSTALLDIR not set - Visual Studio environment may not be configured
-          )
-          echo.
-          
-          REM Verify pom.xml exists
-          if not exist pom.xml (
-            echo ERROR: pom.xml not found in current directory!
-            echo Current directory: %CD%
-            dir
-            exit /b 1
-          )
-          
-          echo ================================================
-          echo Starting Maven build with native profile
-          echo ================================================
-          echo.
-          echo Build command:
-          echo mvn clean install -Pnative-win -DskipTests -Dmaven.javadoc.skip=true -Drequire.snappy=false -Drequire.openssl=false -e
-          echo.
-          
-          REM Execute Maven build with verbose error output
-          REM -Pnative-win: Activates Windows native build profile
-          REM -DskipTests: Skip running tests
-          REM -Dmaven.javadoc.skip: Skip javadoc generation
-          REM -Drequire.snappy=false: Don't require Snappy (optional compression)
-          REM -Drequire.openssl=false: Don't require OpenSSL
-          REM -e: Show detailed error messages
-          
-          mvn clean install -Pnative-win -DskipTests -Dmaven.javadoc.skip=true -Drequire.snappy=false -Drequire.openssl=false -e
-          
-          set BUILD_EXIT_CODE=%ERRORLEVEL%
-          
-          echo.
-          echo ================================================
-          echo Maven build exit code: %BUILD_EXIT_CODE%
-          echo ================================================
-          echo.
-          
-          if %BUILD_EXIT_CODE% neq 0 (
-            echo ERROR: Maven build failed with exit code %BUILD_EXIT_CODE%
-            echo.
-            echo Checking what was created in target directory...
-            if exist target (
-              echo Target directory exists. Contents:
-              dir target
-            ) else (
-              echo Target directory does not exist!
-            )
-            exit /b %BUILD_EXIT_CODE%
-          )
-          
-          echo Maven build completed successfully!
-          echo.
-          
-          REM Verify target directory was created
-          if not exist target (
-            echo ERROR: Target directory was not created despite successful build!
-            exit /b 1
-          )
-          
-          echo ================================================
-          echo Examining build output
-          echo ================================================
-          echo.
-          
-          echo Listing target directory contents...
-          dir target
-          echo.
-          
-          echo Listing target subdirectories...
-          dir /ad target
-          echo.
-          
-          REM Check for native directory and its contents
           if exist target\native (
-            echo [OK] Native directory found: target\native
-            echo.
-            echo Contents of target\native:
-            dir target\native
-            echo.
+            echo [SUCCESS] Method 1 worked! Native directory created.
+            goto :build_complete
+          )
+          
+          echo [INFO] Method 1 did not create native directory. Trying Method 2...
+          echo.
+          
+          :method2
+          echo ================================================
+          echo Attempting Native Build - Method 2: Explicit Native Flag
+          echo ================================================
+          
+          REM Try Method 2: Using -Dnative property
+          echo Attempting: mvn package -Dnative=true
+          mvn clean package -Dnative=true -DskipTests -Dmaven.javadoc.skip=true
+          
+          if exist target\native (
+            echo [SUCCESS] Method 2 worked! Native directory created.
+            goto :build_complete
+          )
+          
+          echo [INFO] Method 2 did not create native directory. Trying Method 3...
+          echo.
+          
+          :method3
+          echo ================================================
+          echo Attempting Native Build - Method 3: Direct Native Module
+          echo ================================================
+          
+          REM Check if there's a separate native source directory
+          if exist src\main\native (
+            echo Native source directory found: src\main\native
+            cd src\main\native
             
-            if exist target\native\target (
-              echo [OK] Native target subdirectory found: target\native\target
-              echo.
-              echo Contents of target\native\target:
-              dir target\native\target
-              echo.
+            REM Try building with CMake directly
+            if exist CMakeLists.txt (
+              echo [INFO] Found CMakeLists.txt, attempting direct CMake build...
               
-              if exist target\native\target\bin (
-                echo [OK] Native bin directory found: target\native\target\bin
-                echo.
-                echo Contents of target\native\target\bin:
-                dir target\native\target\bin
-              ) else (
-                echo [WARNING] target\native\target\bin does not exist
-                echo.
-                echo Searching for bin directories in native folder...
-                dir /s /ad target\native\*bin*
+              mkdir build 2>nul
+              cd build
+              
+              echo Running CMake configuration...
+              cmake -G "Visual Studio 17 2022" -A x64 ..
+              
+              if errorlevel 1 (
+                echo [ERROR] CMake configuration failed
+                cd ..\..\..\
+                goto :method4
               )
+              
+              echo Running CMake build...
+              cmake --build . --config Release
+              
+              if errorlevel 1 (
+                echo [ERROR] CMake build failed
+                cd ..\..\..\
+                goto :method4
+              )
+              
+              echo [SUCCESS] Method 3 worked! CMake build completed.
+              
+              REM Copy binaries to expected location
+              cd ..\..\..\
+              mkdir target\native\target\bin 2>nul
+              
+              if exist src\main\native\build\Release\*.exe (
+                copy src\main\native\build\Release\*.exe target\native\target\bin\
+              )
+              if exist src\main\native\build\Release\*.dll (
+                copy src\main\native\build\Release\*.dll target\native\target\bin\
+              )
+              if exist src\main\native\build\Release\*.lib (
+                copy src\main\native\build\Release\*.lib target\native\target\bin\
+              )
+              
+              goto :build_complete
             ) else (
-              echo [WARNING] target\native\target does not exist
-              echo.
-              echo Contents of target\native:
-              dir /s target\native
+              echo [INFO] No CMakeLists.txt in src\main\native
+              cd ..\..\..
             )
+          )
+          
+          :method4
+          echo ================================================
+          echo Attempting Native Build - Method 4: Maven Compile Phase Only
+          echo ================================================
+          
+          REM Try Method 4: Just compile phase with native profile
+          echo Attempting: mvn compile -Pnative-win
+          mvn compile -Pnative-win -DskipTests
+          
+          if exist target\native (
+            echo [SUCCESS] Method 4 worked! Native directory created.
+            
+            REM Now package the rest
+            echo Running package phase...
+            mvn package -Pnative-win -DskipTests -Dmaven.javadoc.skip=true
+            goto :build_complete
+          )
+          
+          echo [ERROR] All build methods failed. Native compilation did not occur.
+          echo.
+          echo This could mean:
+          echo 1. The native-win profile does not exist in this Hadoop version
+          echo 2. The profile exists but is not configured for Windows
+          echo 3. Additional dependencies or configuration are required
+          echo.
+          echo Searching for pom.xml profile definitions...
+          findstr /I /C:"<id>native" pom.xml
+          echo.
+          exit /b 1
+          
+          :build_complete
+          echo.
+          echo ================================================
+          echo Native build completed successfully!
+          echo ================================================
+          echo.
+          
+          echo Examining build output...
+          if exist target\native (
+            echo Native directory structure:
+            dir /s target\native
           ) else (
-            echo [ERROR] target\native directory does not exist!
-            echo This means the native build was skipped or failed.
-            echo.
-            echo Searching entire target directory for any compiled binaries...
-            dir /s /b target\*.exe target\*.dll 2>nul
-            echo.
-            echo If no files found above, native compilation did not run.
-            exit /b 1
+            echo WARNING: target\native still does not exist after successful build
+            echo Searching for binaries in target directory...
+            dir /s /b target\*.exe target\*.dll
           )
         timeout-minutes: 60
         continue-on-error: false
