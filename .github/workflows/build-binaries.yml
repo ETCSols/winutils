@@ -238,7 +238,37 @@ jobs:
           dir
 
       # ============================================
-      # STEP 11: Cache Maven Dependencies
+      # STEP 11A: Verify Maven Profile Configuration
+      # ============================================
+      - name: Check Maven Native Profile
+        shell: cmd
+        working-directory: hadoop\hadoop-common-project\hadoop-common
+        run: |
+          echo ================================================
+          echo Checking Maven Profile Configuration
+          echo ================================================
+          
+          echo Listing available Maven profiles...
+          mvn help:all-profiles
+          
+          echo.
+          echo Checking if native-win profile exists...
+          mvn help:active-profiles -Pnative-win
+          
+          echo.
+          echo Checking effective POM with native-win profile...
+          mvn help:effective-pom -Pnative-win > effective-pom.xml
+          
+          echo.
+          echo Searching for native build configuration in effective POM...
+          findstr /I /C:"native" /C:"cmake" /C:"make" effective-pom.xml
+          
+          echo.
+          echo Checking what Maven will execute with native-win profile...
+          mvn compile -Pnative-win -DskipTests -X -Dmaven.javadoc.skip=true 2>&1 | findstr /I /C:"native" /C:"cmake" /C:"exec" /C:"BUILD SUCCESS" /C:"BUILD FAILURE"
+
+      # ============================================
+      # STEP 11B: Cache Maven Dependencies
       # ============================================
       - name: Cache Maven Dependencies
         uses: actions/cache@v4
@@ -254,7 +284,7 @@ jobs:
       # ============================================
       - name: Build Hadoop Common Native Libraries
         shell: cmd
-        working-directory: hadoop
+        working-directory: hadoop\hadoop-common-project\hadoop-common
         run: |
           echo ================================================
           echo Building Hadoop ${{ matrix.hadoop_version }} Native Libraries
@@ -262,56 +292,180 @@ jobs:
           echo Current directory: %CD%
           echo.
           
-          REM Set required environment variables
+          REM Set required environment variables for native build
           set JAVA_HOME=%JAVA_HOME%
           set PATH=%PATH%;C:\protobuf\bin
+          set REQUIRE_SNAPPY=false
+          set REQUIRE_OPENSSL=false
+          set REQUIRE_BZIP2=false
           
           REM Display environment for debugging
           echo Environment Variables:
           echo JAVA_HOME=%JAVA_HOME%
           echo MAVEN_OPTS=%MAVEN_OPTS%
           echo Platform=%Platform%
-          echo PATH=%PATH%
+          echo REQUIRE_SNAPPY=%REQUIRE_SNAPPY%
           echo.
           
           REM Verify tools are available
           echo Verifying build tools...
           java -version
+          if errorlevel 1 (
+            echo ERROR: Java not found!
+            exit /b 1
+          )
           echo.
+          
           mvn --version
+          if errorlevel 1 (
+            echo ERROR: Maven not found!
+            exit /b 1
+          )
           echo.
+          
           cmake --version
+          if errorlevel 1 (
+            echo ERROR: CMake not found!
+            exit /b 1
+          )
           echo.
+          
           protoc --version
+          if errorlevel 1 (
+            echo ERROR: Protoc not found!
+            exit /b 1
+          )
           echo.
+          
           msbuild /version
+          if errorlevel 1 (
+            echo ERROR: MSBuild not found!
+            exit /b 1
+          )
           echo.
           
-          REM Check if we're in Developer Command Prompt
+          REM Check Visual Studio environment
           echo Checking Visual Studio environment...
-          set | findstr /I "VisualStudio"
+          echo VCINSTALLDIR=%VCINSTALLDIR%
+          echo VCToolsInstallDir=%VCToolsInstallDir%
+          if "%VCINSTALLDIR%"=="" (
+            echo WARNING: VCINSTALLDIR not set - Visual Studio environment may not be configured
+          )
           echo.
           
-          REM Build hadoop-common with native profile
-          echo Building hadoop-common with native libraries...
-          cd hadoop-common-project\hadoop-common
+          REM Verify pom.xml exists
+          if not exist pom.xml (
+            echo ERROR: pom.xml not found in current directory!
+            echo Current directory: %CD%
+            dir
+            exit /b 1
+          )
           
-          REM Use install phase instead of package to ensure native build runs
-          REM Add -e for detailed error output
-          mvn clean install -Pnative-win -DskipTests -Dmaven.javadoc.skip=true -e
+          echo ================================================
+          echo Starting Maven build with native profile
+          echo ================================================
+          echo.
+          echo Build command:
+          echo mvn clean install -Pnative-win -DskipTests -Dmaven.javadoc.skip=true -Drequire.snappy=false -Drequire.openssl=false -e
+          echo.
+          
+          REM Execute Maven build with verbose error output
+          REM -Pnative-win: Activates Windows native build profile
+          REM -DskipTests: Skip running tests
+          REM -Dmaven.javadoc.skip: Skip javadoc generation
+          REM -Drequire.snappy=false: Don't require Snappy (optional compression)
+          REM -Drequire.openssl=false: Don't require OpenSSL
+          REM -e: Show detailed error messages
+          
+          mvn clean install -Pnative-win -DskipTests -Dmaven.javadoc.skip=true -Drequire.snappy=false -Drequire.openssl=false -e
+          
+          set BUILD_EXIT_CODE=%ERRORLEVEL%
           
           echo.
-          echo Build completed. Checking build output...
-          
-          REM List the target directory structure
+          echo ================================================
+          echo Maven build exit code: %BUILD_EXIT_CODE%
+          echo ================================================
           echo.
-          echo Target directory structure:
-          dir /s /b target\native 2>nul
           
+          if %BUILD_EXIT_CODE% neq 0 (
+            echo ERROR: Maven build failed with exit code %BUILD_EXIT_CODE%
+            echo.
+            echo Checking what was created in target directory...
+            if exist target (
+              echo Target directory exists. Contents:
+              dir target
+            ) else (
+              echo Target directory does not exist!
+            )
+            exit /b %BUILD_EXIT_CODE%
+          )
+          
+          echo Maven build completed successfully!
           echo.
-          echo Searching for any built binaries...
-          dir /s /b target\*.exe target\*.dll 2>nul
+          
+          REM Verify target directory was created
+          if not exist target (
+            echo ERROR: Target directory was not created despite successful build!
+            exit /b 1
+          )
+          
+          echo ================================================
+          echo Examining build output
+          echo ================================================
+          echo.
+          
+          echo Listing target directory contents...
+          dir target
+          echo.
+          
+          echo Listing target subdirectories...
+          dir /ad target
+          echo.
+          
+          REM Check for native directory and its contents
+          if exist target\native (
+            echo [OK] Native directory found: target\native
+            echo.
+            echo Contents of target\native:
+            dir target\native
+            echo.
+            
+            if exist target\native\target (
+              echo [OK] Native target subdirectory found: target\native\target
+              echo.
+              echo Contents of target\native\target:
+              dir target\native\target
+              echo.
+              
+              if exist target\native\target\bin (
+                echo [OK] Native bin directory found: target\native\target\bin
+                echo.
+                echo Contents of target\native\target\bin:
+                dir target\native\target\bin
+              ) else (
+                echo [WARNING] target\native\target\bin does not exist
+                echo.
+                echo Searching for bin directories in native folder...
+                dir /s /ad target\native\*bin*
+              )
+            ) else (
+              echo [WARNING] target\native\target does not exist
+              echo.
+              echo Contents of target\native:
+              dir /s target\native
+            )
+          ) else (
+            echo [ERROR] target\native directory does not exist!
+            echo This means the native build was skipped or failed.
+            echo.
+            echo Searching entire target directory for any compiled binaries...
+            dir /s /b target\*.exe target\*.dll 2>nul
+            echo.
+            echo If no files found above, native compilation did not run.
+            exit /b 1
+          )
         timeout-minutes: 60
+        continue-on-error: false
 
       # ============================================
       # STEP 13: Verify Build Artifacts
