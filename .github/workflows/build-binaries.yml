@@ -9,7 +9,7 @@ on:
         required: true
         default: '3.4.2'
   
-  # Trigger on push to main branch (optional)
+  # # Trigger on push to main branch (optional)
   # push:
   #   branches:
   #     - main
@@ -307,36 +307,116 @@ jobs:
           $WINUTILS_HEADER = "src\main\winutils\include\winutils.h"
           
           if (Test-Path $WINUTILS_HEADER) {
-            Write-Host "Found winutils.h, applying compatibility patch..."
+            Write-Host "Found winutils.h at: $WINUTILS_HEADER"
+            Write-Host ""
             
-            # Read the file
+            # Read the file content
             $content = Get-Content $WINUTILS_HEADER -Raw
             
-            # Check if GetFileInformationByName is declared
-            if ($content -match "GetFileInformationByName") {
-              Write-Host "Found GetFileInformationByName declaration - this conflicts with Windows SDK 10.0.26100.0"
+            Write-Host "Checking for GetFileInformationByName declaration..."
+            
+            # Show the problematic lines
+            $lines = Get-Content $WINUTILS_HEADER
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match "GetFileInformationByName") {
+                Write-Host "Found at line $($i+1): $($lines[$i])"
+              }
+            }
+            
+            Write-Host ""
+            Write-Host "Applying compatibility fix..."
+            
+            # Strategy: Wrap the declaration in an #ifndef guard
+            # This prevents redefinition if Windows SDK already provides it
+            
+            # Pattern to match the entire GetFileInformationByName declaration
+            # It might span multiple lines, so we need to handle that
+            $pattern = '(?s)(BOOL\s+WINAPI\s+GetFileInformationByName\s*\([^)]+\)\s*;)'
+            
+            if ($content -match $pattern) {
+              Write-Host "Found GetFileInformationByName declaration"
               
-              # Comment out or remove the conflicting declaration
-              # The function is already provided by winbase.h in modern Windows SDK
-              $content = $content -replace '(?m)^(\s*BOOL\s+WINAPI\s+GetFileInformationByName[^;]*;)', '// $1 // Commented out - conflicts with Windows SDK 10.0.26100.0'
+              # Replace with guarded version
+              $replacement = @"
+#ifndef GetFileInformationByName
+// Conditionally declare GetFileInformationByName for older Windows SDK versions
+// Modern Windows SDK (10.0.26100.0+) already provides this function
+$($matches[1])
+#endif
+"@
               
-              # Write back
-              Set-Content -Path $WINUTILS_HEADER -Value $content -NoNewline
+              $content = $content -replace $pattern, $replacement
+              
+              # Write back with UTF8 encoding
+              [System.IO.File]::WriteAllText($WINUTILS_HEADER, $content, [System.Text.Encoding]::UTF8)
               
               Write-Host "Patch applied successfully!"
-              Write-Host ""
-              Write-Host "Verifying patch..."
-              Get-Content $WINUTILS_HEADER | Select-String -Pattern "GetFileInformationByName" -Context 2
             } else {
-              Write-Host "GetFileInformationByName not found in header - patch may not be needed"
+              Write-Host "Could not match GetFileInformationByName pattern with regex"
+              Write-Host "Trying line-by-line approach..."
+              
+              # Alternative: Line-by-line approach
+              $lines = Get-Content $WINUTILS_HEADER
+              $newLines = @()
+              $inDeclaration = $false
+              $declarationLines = @()
+              
+              for ($i = 0; $i -lt $lines.Count; $i++) {
+                $line = $lines[$i]
+                
+                # Check if this line starts the GetFileInformationByName declaration
+                if ($line -match 'BOOL\s+WINAPI\s+GetFileInformationByName') {
+                  $inDeclaration = $true
+                  $declarationLines = @()
+                  $newLines += "#ifndef GetFileInformationByName"
+                  $newLines += "// Conditionally declare GetFileInformationByName for older Windows SDK"
+                  $declarationLines += $line
+                  
+                  # Check if declaration ends on same line
+                  if ($line -match ';') {
+                    $inDeclaration = $false
+                    $newLines += $declarationLines
+                    $newLines += "#endif"
+                    $declarationLines = @()
+                  }
+                }
+                elseif ($inDeclaration) {
+                  $declarationLines += $line
+                  if ($line -match ';') {
+                    $inDeclaration = $false
+                    $newLines += $declarationLines
+                    $newLines += "#endif"
+                    $declarationLines = @()
+                  }
+                }
+                else {
+                  $newLines += $line
+                }
+              }
+              
+              # Write the modified content
+              $newContent = $newLines -join "`r`n"
+              [System.IO.File]::WriteAllText($WINUTILS_HEADER, $newContent, [System.Text.Encoding]::UTF8)
+              
+              Write-Host "Line-by-line patch applied!"
             }
+            
+            Write-Host ""
+            Write-Host "Verifying patch..."
+            Write-Host ""
+            Get-Content $WINUTILS_HEADER | Select-String -Pattern "GetFileInformationByName" -Context 3
+            
           } else {
-            Write-Host "winutils.h not found at expected location"
+            Write-Host "ERROR: winutils.h not found at: $WINUTILS_HEADER"
             Write-Host "Searching for winutils.h..."
             Get-ChildItem -Path "src" -Recurse -Filter "winutils.h" -ErrorAction SilentlyContinue | ForEach-Object {
               Write-Host "  Found: $($_.FullName)"
             }
+            exit 1
           }
+          
+          Write-Host ""
+          Write-Host "Patch complete!"
 
       # ============================================
       # STEP 11C: Cache Maven Dependencies
