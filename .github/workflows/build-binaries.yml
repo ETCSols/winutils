@@ -338,12 +338,12 @@ jobs:
               
               # Replace with guarded version
               $replacement = @"
-#ifndef GetFileInformationByName
-// Conditionally declare GetFileInformationByName for older Windows SDK versions
-// Modern Windows SDK (10.0.26100.0+) already provides this function
-$($matches[1])
-#endif
-"@
+              #ifndef GetFileInformationByName
+              // Conditionally declare GetFileInformationByName for older Windows SDK versions
+              // Modern Windows SDK (10.0.26100.0+) already provides this function
+              $($matches[1])
+              #endif
+              "@
               
               $content = $content -replace $pattern, $replacement
               
